@@ -11,7 +11,16 @@ from SceneSenseServer.utils import utils
 
 
 def is_surrounded(point, close_points):
-    """Check if a point is surrounded by other points."""
+    """
+    Check if a point is surrounded by other points in all cardinal directions.
+    
+    Args:
+        point (np.ndarray): The point to check (x, y, z coordinates).
+        close_points (np.ndarray): Array of nearby points to check against.
+        
+    Returns:
+        bool: True if the point is surrounded in all directions, False otherwise.
+    """
     # Calculate differences between the point and its neighbors
     differences = close_points - point
 
@@ -35,7 +44,16 @@ def is_surrounded(point, close_points):
 
 
 def categorize_points(points, categories):
-    """Group points by their categories."""
+    """
+    Group points by their category labels.
+    
+    Args:
+        points (np.ndarray): Array of points to categorize.
+        categories (np.ndarray): Category labels for each point.
+        
+    Returns:
+        dict: Dictionary mapping category labels to lists of points.
+    """
     categories_dict = {}
     for point, category in zip(points, categories):
         if category not in categories_dict:
@@ -45,7 +63,15 @@ def categorize_points(points, categories):
 
 
 def calculate_median_points(categories_dict):
-    """Calculate median points for each category."""
+    """
+    Calculate the median point (centroid) for each category of points.
+    
+    Args:
+        categories_dict (dict): Dictionary mapping category labels to lists of points.
+        
+    Returns:
+        np.ndarray: Array of median points, one for each category.
+    """
     medians = []
     for category in categories_dict:
         points = np.array(categories_dict[category])
@@ -55,12 +81,39 @@ def calculate_median_points(categories_dict):
 
 
 class FrontierFinder:
+    """
+    Class for identifying and clustering frontier points in point cloud data.
+    
+    Frontier points are defined as unoccupied points that are not completely
+    surrounded by other points, indicating potential areas for exploration.
+    """
+    
     def __init__(self, data_dir=None, odom_dir=None):
+        """
+        Initialize the FrontierFinder with directory paths.
+        
+        Args:
+            data_dir (str, optional): Directory containing point cloud data files.
+                Defaults to "data/range_max".
+            odom_dir (str, optional): Directory containing odometry data files.
+                Defaults to "/hdd/spot_diff_data/odometry/odometry".
+        """
         self.data_dir = data_dir or "data/range_max"
         self.odom_dir = odom_dir or "/hdd/spot_diff_data/odometry/odometry"
 
     def load_point_clouds(self, occ_file="running_occ.pcd", unocc_file="test_unoc.pcd"):
-        """Load and preprocess point clouds."""
+        """
+        Load and preprocess occupied and unoccupied point clouds.
+        
+        Args:
+            occ_file (str, optional): Filename of the occupied points PCD file.
+                Defaults to "running_occ.pcd".
+            unocc_file (str, optional): Filename of the unoccupied points PCD file.
+                Defaults to "test_unoc.pcd".
+                
+        Returns:
+            tuple: A tuple containing (occupied_point_cloud, unoccupied_point_cloud).
+        """
         occ_pcd_path = os.path.join(self.data_dir, occ_file)
         unocc_pcd_path = os.path.join(self.data_dir, unocc_file)
 
@@ -73,7 +126,17 @@ class FrontierFinder:
         return occ_pcd, unocc_pcd
 
     def transform_point_clouds(self, occ_pcd, unocc_pcd, odom_idx=409):
-        """Transform point clouds using odometry data."""
+        """
+        Transform point clouds using odometry data to align them in a common reference frame.
+        
+        Args:
+            occ_pcd (open3d.geometry.PointCloud): Occupied points point cloud.
+            unocc_pcd (open3d.geometry.PointCloud): Unoccupied points point cloud.
+            odom_idx (int, optional): Index of the odometry file to use. Defaults to 409.
+            
+        Returns:
+            tuple: Transformed (occupied_point_cloud, unoccupied_point_cloud).
+        """
         odom_file_names = natsorted(os.listdir(self.odom_dir))
         pose = np.load(os.path.join(self.odom_dir, odom_file_names[odom_idx]))
         rotation_obj = Rotation.from_rotvec(pose[3::])
@@ -88,7 +151,25 @@ class FrontierFinder:
         return occ_pcd, unocc_pcd
 
     def find_frontiers(self, occ_pcd, unocc_pcd, eps=0.3, min_samples=5):
-        """Find frontier points in the point clouds."""
+        """
+        Find and cluster frontier points in the point clouds.
+        
+        Frontier points are identified as unoccupied points that are not completely
+        surrounded by other points. These are then clustered to identify distinct frontiers.
+        
+        Args:
+            occ_pcd (open3d.geometry.PointCloud): Occupied points point cloud.
+            unocc_pcd (open3d.geometry.PointCloud): Unoccupied points point cloud.
+            eps (float, optional): The maximum distance between two samples for DBSCAN clustering.
+                Defaults to 0.3.
+            min_samples (int, optional): The minimum number of samples in a neighborhood for a point
+                to be considered a core point in DBSCAN. Defaults to 5.
+                
+        Returns:
+            tuple: (frontier_point_cloud, median_frontier_points) where frontier_point_cloud
+                  is an Open3D point cloud of all frontier points colored by cluster, and
+                  median_frontier_points is a numpy array of the median points of each cluster.
+        """
         occ_pcd = utils.set_rgb(occ_pcd)
         unocc_pcd = utils.set_rgb(unocc_pcd, 0)
 
@@ -101,7 +182,7 @@ class FrontierFinder:
         kdtree = KDTree(all_points)
         dist, points = kdtree.query(
             unocc_points, 7
-        )  # need to query 7 because it includes itself
+        )  # Query 7 because it includes the point itself
 
         # Find frontier points
         front_point_arr = np.empty((0, 3), float)

@@ -7,7 +7,7 @@ setup(
     install_requires=[
         "flask",
         "requests",
-        "open3d",
+        "open3d-python",
         "natsort",
         "numpy",
         "scipy",
@@ -21,6 +21,6 @@ setup(
         "clean-fid",
     ],
     authors="Alec Reed, Lorin Achey and, Brendan Crowe",
-    description="A server for scene understanding and diffusion-based completion",
+    description="A server for  diffusion-based completion occupancy completion and frontier extension",
     python_requires=">=3.8",
 )

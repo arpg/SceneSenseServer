@@ -1,5 +1,5 @@
 from SceneSenseServer.core.frontier_finder import FrontierFinder
-from SceneSenseServer.server import flask_diffusion_server
+from SceneSenseServer.server import diffusion_server
 from SceneSenseServer.utils import utils
 
 print("Successfully imported SceneSenseServer modules!")
