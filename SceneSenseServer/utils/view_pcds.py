@@ -1,52 +1,84 @@
+"""
+Utility script for visualizing point clouds with odometry transformation.
+
+This script loads point clouds, applies odometry-based transformations,
+and visualizes the result with a coordinate frame for reference.
+"""
+
+import os
+
+import numpy as np
 import open3d as o3d
 from natsort import natsorted
-import os
-import numpy as np
+from scipy.spatial.transform import Rotation
 
-points_path = "/hdd/spot_diff_data/point_clouds/point_clouds"
-point_file_names = natsorted(os.listdir(points_path))
-pcd = o3d.io.read_point_cloud(os.path.join(points_path,point_file_names[10]))
-coor = o3d.geometry.TriangleMesh.create_coordinate_frame()
-# colors = np.zeros((len(np.asarray(pcd.points)), 3))
-# colors[:,0] = 1
-# pcd.colors = o3d.utility.Vector3dVector(colors)
-# print(np.asarray(pcd.points).shape)
-# o3d.visualization.draw_geometries([pcd])
-# print(first_map.shape)
-def key_callback(vis):
-    global step
-    try: step
-    except NameError: step = 10
+from SceneSenseServer.utils import utils
 
-    print("step forward step " + str(step))
-    pcd = o3d.io.read_point_cloud(os.path.join(points_path,point_file_names[step]))
-    ctr  = vis.get_view_control()
-    view_param =ctr.convert_to_pinhole_camera_parameters()
-    vis.clear_geometries()
-    vis.add_geometry(pcd)
-    vis.add_geometry(coor)
-    ctr.convert_from_pinhole_camera_parameters(view_param)
-    step += 1
-def key_callback_backwards(vis):
-    global step
-    try: step
-    except NameError: step = 10
+
+def load_point_cloud(file_path):
+    """
+    Load a point cloud file and perform initial preprocessing.
     
-    print("step_back step " + str(step))
-    pcd = o3d.io.read_point_cloud(os.path.join(points_path,point_file_names[step]))
-    ctr  = vis.get_view_control()
-    view_param =ctr.convert_to_pinhole_camera_parameters()
-    vis.clear_geometries()
-    vis.add_geometry(pcd)
-    vis.add_geometry(coor)
-    ctr.convert_from_pinhole_camera_parameters(view_param)
-    step -= 1
+    Args:
+        file_path (str): Path to the point cloud file
+        
+    Returns:
+        o3d.geometry.PointCloud: Processed point cloud
+    """
+    pcd = o3d.io.read_point_cloud(file_path)
+    # Apply height filtering
+    pcd = utils.update_points(pcd, -1.3, 1, 2)
+    return pcd
 
 
-vis = o3d.visualization.VisualizerWithKeyCallback()
-vis.create_window()
-vis.add_geometry(pcd)
-vis.register_key_callback(68, key_callback) #65 is a 39 shoudl be forward arrow
-vis.register_key_callback(65, key_callback_backwards) #66 is b 37 shoudl be backwards arrow
-vis.run()
-vis.destroy_window()
+def apply_odometry_transform(pcd, odom_path, odom_idx=480):
+    """
+    Apply odometry-based transformation to the point cloud.
+    
+    Args:
+        pcd (o3d.geometry.PointCloud): Point cloud to transform
+        odom_path (str): Path to odometry data directory
+        odom_idx (int): Index of the odometry file to use
+        
+    Returns:
+        tuple: (transformed_point_cloud, coordinate_frame)
+    """
+    # Create coordinate frame for visualization
+    coor = o3d.geometry.TriangleMesh.create_coordinate_frame()
+    
+    # Load odometry data
+    odom_file_names = natsorted(os.listdir(odom_path))
+    pose = np.load(os.path.join(odom_path, odom_file_names[odom_idx]))
+    
+    # Create homogeneous transformation matrix
+    rotation_obj = Rotation.from_rotvec(pose[3:])
+    hm_tx_mat = utils.homogeneous_transform(pose[0:3], rotation_obj.as_quat())
+    
+    # Apply transformation to the point cloud
+    pcd.transform(utils.inverse_homogeneous_transform(hm_tx_mat))
+    
+    # Additional filtering to remove distant points
+    pcd = utils.update_points(pcd, -100, 2, 1)
+    
+    return pcd, coor
+
+
+def main():
+    """Main function to run the point cloud visualization."""
+    # Configuration
+    POINTS_PATH = "data/range_max/running_occ.pcd"
+    ODOM_PATH = "/hdd/spot_diff_data/odometry/odometry"
+    ODOM_IDX = 480
+    
+    # Load point cloud
+    pcd = load_point_cloud(POINTS_PATH)
+    
+    # Apply odometry transformation
+    pcd, coor = apply_odometry_transform(pcd, ODOM_PATH, ODOM_IDX)
+    
+    # Visualize
+    o3d.visualization.draw_geometries([pcd, coor])
+
+
+if __name__ == "__main__":
+    main()

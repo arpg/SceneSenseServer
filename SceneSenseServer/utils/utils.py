@@ -1,14 +1,36 @@
-import torch
-import os 
+"""
+Core utility functions for point cloud processing and diffusion-based scene completion.
+
+This module contains various utility functions for working with point clouds,
+coordinate transformations, pointmap conversions, and applying diffusion models
+for scene completion tasks.
+"""
+
+import copy
+import math
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
-from tqdm.auto import tqdm
-import copy
-from scipy.spatial.transform import Rotation
-import math
 import open3d as o3d
+import torch
+from scipy.spatial.transform import Rotation
+from tqdm.auto import tqdm
+
 
 def inverse_homogeneous_transform(matrix):
+    """
+    Calculate the inverse of a homogeneous transformation matrix.
+    
+    Args:
+        matrix (np.ndarray): A 4x4 homogeneous transformation matrix.
+        
+    Returns:
+        np.ndarray: The inverse 4x4 homogeneous transformation matrix.
+        
+    Raises:
+        ValueError: If the input matrix is not 4x4.
+    """
     if matrix.shape != (4, 4):
         raise ValueError("Input matrix must be a 4x4 numpy array")
     
@@ -34,14 +56,16 @@ def homogeneous_transform(translation, rotation):
     Generate a homogeneous transformation matrix from a translation vector
     and a quaternion rotation.
 
-    Parameters:
-    - translation: 1D NumPy array or list of length 3 representing translation along x, y, and z axes.
-    - rotation: 1D NumPy array or list of length 4 representing a quaternion rotation.
+    Args:
+        translation (np.ndarray): 1D array of length 3 representing translation along x, y, and z axes.
+        rotation (np.ndarray): 1D array of length 4 representing a quaternion rotation.
 
     Returns:
-    - 4x4 homogeneous transformation matrix.
+        np.ndarray: 4x4 homogeneous transformation matrix.
+        
+    Raises:
+        ValueError: If translation vector or rotation quaternion have incorrect dimensions.
     """
-
     # Ensure that the input vectors have the correct dimensions
     translation = np.array(translation, dtype=float)
     rotation = np.array(rotation, dtype=float)
@@ -62,16 +86,40 @@ def homogeneous_transform(translation, rotation):
 
     return homogeneous_matrix
 
-def update_points(pcd, min, max, axis):
+def update_points(pcd, min_val, max_val, axis):
+    """
+    Filter points in a point cloud based on min/max bounds along a specified axis.
+    
+    Args:
+        pcd (o3d.geometry.PointCloud): The input point cloud.
+        min_val (float): Minimum value along the specified axis.
+        max_val (float): Maximum value along the specified axis.
+        axis (int): The axis to filter (0=x, 1=y, 2=z).
+        
+    Returns:
+        o3d.geometry.PointCloud: Filtered point cloud.
+    """
     points = np.asarray(pcd.points)
-    points = points[points[:,axis] < max]
-    points = points[points[:,axis] >  min]
+    points = points[points[:, axis] < max_val]
+    points = points[points[:, axis] > min_val]
     pcd.points = o3d.utility.Vector3dVector(points)
     return pcd
+
 def set_rgb(pcd, color_idx=None):
+    """
+    Set RGB colors for a point cloud.
+    
+    Args:
+        pcd (o3d.geometry.PointCloud): The input point cloud.
+        color_idx (int, optional): Index of the color channel to set to 1 (R=0, G=1, B=2).
+            If None, all colors are set to 0.
+            
+    Returns:
+        o3d.geometry.PointCloud: Point cloud with updated colors.
+    """
     colors = np.zeros((len(np.asarray(pcd.points)), 3))
     if color_idx is not None:
-        colors[:,0] = colors[:,color_idx] + 1
+        colors[:, color_idx] = 1.0
     pcd.colors = o3d.utility.Vector3dVector(colors)
     return pcd
 
@@ -79,18 +127,17 @@ def points_within_distance(x, y, points, distance):
     """
     Find all 3D points within a specified distance from a given (x, y) location.
 
-    Parameters:
-    - x, y: The x and y coordinates of the location.
-    - points: NumPy array of shape (num_points, 3) representing 3D points.
-    - distance: The maximum distance for points to be considered within.
+    Args:
+        x (float): The x coordinate of the reference location.
+        y (float): The y coordinate of the reference location.
+        points (np.ndarray): Array of shape (num_points, 3) representing 3D points.
+        distance (float): The maximum distance for points to be considered within.
 
     Returns:
-    - NumPy array of points within the specified distance.
+        np.ndarray: Array of points within the specified distance.
     """
-
     # Extract x, y coordinates from the 3D points
-    #this actually needs to be xz
-    xy_coordinates = points[:, [0,1]]
+    xy_coordinates = points[:, [0, 1]]
 
     # Calculate the Euclidean distance from the given location to all points
     distances = np.linalg.norm(xy_coordinates - np.array([x, y]), axis=1)
@@ -99,89 +146,172 @@ def points_within_distance(x, y, points, distance):
     within_distance_indices = np.where(distances <= distance)[0]
 
     # Extract points within the distance
-    points_within_distance = points[within_distance_indices]
+    points_within = points[within_distance_indices]
 
-    return points_within_distance
-def pc_to_pointmap(pointcloud, voxel_size  = 0.1, x_y_bounds = [-1.5, 1.5], z_bounds = [-1.4, 0.9]):
-    #takes a pointcloud and return a pointmap
-    x_y_width = round((x_y_bounds[1]- x_y_bounds[0])/voxel_size)
-    z_width = round((z_bounds[1]- z_bounds[0])/voxel_size)
-    #change pointcloud start at zero (no negative number since pointmap indices are positive)
-    pointcloud[:,0] = pointcloud[:,0] + abs(x_y_bounds[0])
-    pointcloud[:,1] = pointcloud[:,1] + abs(x_y_bounds[0])
-    pointcloud[:,2] = pointcloud[:,2] + abs(z_bounds[0])
+    return points_within
+
+def pc_to_pointmap(pointcloud, voxel_size=0.1, x_y_bounds=[-1.5, 1.5], z_bounds=[-1.4, 0.9]):
+    """
+    Convert a point cloud to a 3D pointmap representation.
     
-    # create empty pointmap
-    point_map = np.zeros((z_width,x_y_width,x_y_width), dtype = float)
-    #compute which voxels to fill in the pointmap
-    prec_vox_X = pointcloud[:,0]/(x_y_bounds[1]- x_y_bounds[0])
-    prec_vox_Y = pointcloud[:,1]/(x_y_bounds[1]- x_y_bounds[0])
-    prec_vox_Z = pointcloud[:,2]/(z_bounds[1]- z_bounds[0])
-    # print(prec_vox_X.shape)
-    #for each point fill a point in the pointmap
+    Args:
+        pointcloud (np.ndarray): Array of shape (num_points, 3) representing 3D points.
+        voxel_size (float): Size of each voxel in the pointmap.
+        x_y_bounds (list): Minimum and maximum values for x and y dimensions.
+        z_bounds (list): Minimum and maximum values for z dimension.
+        
+    Returns:
+        np.ndarray: 3D pointmap representation with shape (z_width, x_y_width, x_y_width).
+    """
+    # Calculate dimensions of the pointmap
+    x_y_width = round((x_y_bounds[1] - x_y_bounds[0]) / voxel_size)
+    z_width = round((z_bounds[1] - z_bounds[0]) / voxel_size)
+    
+    # Create a copy of the pointcloud to avoid modifying the original
+    pointcloud = pointcloud.copy()
+    
+    # Shift points to start at origin (no negative numbers since pointmap indices are positive)
+    pointcloud[:, 0] = pointcloud[:, 0] + abs(x_y_bounds[0])
+    pointcloud[:, 1] = pointcloud[:, 1] + abs(x_y_bounds[0])
+    pointcloud[:, 2] = pointcloud[:, 2] + abs(z_bounds[0])
+    
+    # Create empty pointmap
+    point_map = np.zeros((z_width, x_y_width, x_y_width), dtype=float)
+    
+    # Compute which voxels to fill in the pointmap
+    prec_vox_X = pointcloud[:, 0] / (x_y_bounds[1] - x_y_bounds[0])
+    prec_vox_Y = pointcloud[:, 1] / (x_y_bounds[1] - x_y_bounds[0])
+    prec_vox_Z = pointcloud[:, 2] / (z_bounds[1] - z_bounds[0])
+    
+    # For each point, fill a point in the pointmap
     for idx, val in enumerate(prec_vox_X):
-        # print(prec_vox_Z[idx])
-        point_map[math.floor(prec_vox_Z[idx]* z_width), math.floor(prec_vox_X[idx]*x_y_width), math.floor(prec_vox_Y[idx]* x_y_width)] = 1.0
+        # Bound the indices to be within the pointmap dimensions
+        z_idx = min(math.floor(prec_vox_Z[idx] * z_width), z_width - 1)
+        x_idx = min(math.floor(prec_vox_X[idx] * x_y_width), x_y_width - 1)
+        y_idx = min(math.floor(prec_vox_Y[idx] * x_y_width), x_y_width - 1)
+        
+        # Skip if indices are negative
+        if z_idx < 0 or x_idx < 0 or y_idx < 0:
+            continue
+            
+        point_map[z_idx, x_idx, y_idx] = 1.0
 
     return point_map
-def pointmap_to_pc(pointmap, voxel_size  = 0.1, x_y_bounds = [-1.5, 1.5], z_bounds = [-1.4, 0.9], prediction_thresh = 0.8):
-    #setup empty pointcloud
-    arr = np.empty((0,3), np.single())
-    #reads in a pointmap and returns a pointcloud
-    for z_idx,z_val in enumerate(pointmap):
+
+def pointmap_to_pc(pointmap, voxel_size=0.1, x_y_bounds=[-1.5, 1.5], z_bounds=[-1.4, 0.9], prediction_thresh=0.8):
+    """
+    Convert a pointmap back to a point cloud.
+    
+    Args:
+        pointmap (np.ndarray): 3D pointmap representation.
+        voxel_size (float): Size of each voxel in the pointmap.
+        x_y_bounds (list): Minimum and maximum values for x and y dimensions.
+        z_bounds (list): Minimum and maximum values for z dimension.
+        prediction_thresh (float): Threshold for considering a voxel as occupied.
+        
+    Returns:
+        np.ndarray: Array of shape (num_points, 3) representing 3D points.
+    """
+    # Setup empty pointcloud
+    arr = np.empty((0, 3), np.single)
+    
+    # Iterate through the pointmap
+    for z_idx, z_val in enumerate(pointmap):
         for x_idx, x_val in enumerate(z_val):
             for y_idx, y_val in enumerate(x_val):
                 if y_val > prediction_thresh:
-                    arr = np.append(arr, np.array([[x_idx*voxel_size + voxel_size/2,
-                                                    y_idx*voxel_size + voxel_size/2,
-                                                    z_idx*voxel_size + voxel_size/2]]), axis = 0)
+                    # Add a point at the center of the voxel
+                    point = np.array([[
+                        x_idx * voxel_size + voxel_size / 2,
+                        y_idx * voxel_size + voxel_size / 2,
+                        z_idx * voxel_size + voxel_size / 2
+                    ]])
+                    arr = np.append(arr, point, axis=0)
 
-    arr[:,0] = arr[:,0] - abs(x_y_bounds[0])
-    arr[:,1] = arr[:,1] - abs(x_y_bounds[0])
-    arr[:,2] = arr[:,2] - abs(z_bounds[0])
+    # Shift points back to original coordinate system
+    arr[:, 0] = arr[:, 0] - abs(x_y_bounds[0])
+    arr[:, 1] = arr[:, 1] - abs(x_y_bounds[0])
+    arr[:, 2] = arr[:, 2] - abs(z_bounds[0])
 
     return arr
-def pointmap_to_pc_fast(pointmap, voxel_size  = 0.1, x_y_bounds = [-1.5, 1.5], z_bounds = [-1.4, 0.9], prediction_thresh = 0.8):
-    # print(pointmap.shape)
-    #move to cpu
-    local_pm = pointmap.cpu()
-    #get idx where there are predicted points
-    #this returns a tuple
+
+def pointmap_to_pc_fast(pointmap, voxel_size=0.1, x_y_bounds=[-1.5, 1.5], z_bounds=[-1.4, 0.9], prediction_thresh=0.8):
+    """
+    Faster version of pointmap_to_pc using NumPy operations.
+    
+    Args:
+        pointmap (torch.Tensor or np.ndarray): 3D pointmap representation.
+        voxel_size (float): Size of each voxel in the pointmap.
+        x_y_bounds (list): Minimum and maximum values for x and y dimensions.
+        z_bounds (list): Minimum and maximum values for z dimension.
+        prediction_thresh (float): Threshold for considering a voxel as occupied.
+        
+    Returns:
+        np.ndarray: Array of shape (num_points, 3) representing occupied points.
+    """
+    # Move to CPU if it's a torch tensor
+    if isinstance(pointmap, torch.Tensor):
+        local_pm = pointmap.cpu().numpy()
+    else:
+        local_pm = pointmap
+    
+    # Get indices where there are predicted points
     point_idx = np.where(local_pm > prediction_thresh)
-    points_arr = np.array([[point_idx[1]],[point_idx[2]],[point_idx[0]]], dtype = float)
-    points_arr = np.transpose(points_arr, (1,2,0))
-    points_arr = points_arr[0,:,:]
-    # print(points_arr.shape)
-    points_arr[:,0] = points_arr[:,0]*voxel_size + voxel_size/2
-    points_arr[:,1] = points_arr[:,1]*voxel_size + voxel_size/2
-    points_arr[:,2] = points_arr[:,2]*voxel_size + voxel_size/2
+    
+    # Create points array using the indices
+    points_arr = np.array([[point_idx[1]], [point_idx[2]], [point_idx[0]]], dtype=float)
+    points_arr = np.transpose(points_arr, (1, 2, 0))[0]
+    
+    # Convert indices to coordinates
+    points_arr[:, 0] = points_arr[:, 0] * voxel_size + voxel_size / 2
+    points_arr[:, 1] = points_arr[:, 1] * voxel_size + voxel_size / 2
+    points_arr[:, 2] = points_arr[:, 2] * voxel_size + voxel_size / 2
 
-    points_arr[:,0] = points_arr[:,0] - abs(x_y_bounds[0])
-    points_arr[:,1] = points_arr[:,1] - abs(x_y_bounds[0])
-    points_arr[:,2] = points_arr[:,2] - abs(z_bounds[0])
+    # Shift points back to original coordinate system
+    points_arr[:, 0] = points_arr[:, 0] - abs(x_y_bounds[0])
+    points_arr[:, 1] = points_arr[:, 1] - abs(x_y_bounds[0])
+    points_arr[:, 2] = points_arr[:, 2] - abs(z_bounds[0])
 
     return points_arr
-def pointmap_to_pc_fast_unoc(pointmap, voxel_size  = 0.1, x_y_bounds = [-1.5, 1.5], z_bounds = [-1.4, 0.9], prediction_thresh = 0.8):
-    # print(pointmap.shape)
-    #move to cpu
-    local_pm = pointmap.cpu()
-    #get idx where there are predicted points
-    #this returns a tuple
+
+def pointmap_to_pc_fast_unoc(pointmap, voxel_size=0.1, x_y_bounds=[-1.5, 1.5], z_bounds=[-1.4, 0.9], prediction_thresh=0.8):
+    """
+    Faster version of pointmap_to_pc for unoccupied space (values below threshold).
+    
+    Args:
+        pointmap (torch.Tensor or np.ndarray): 3D pointmap representation.
+        voxel_size (float): Size of each voxel in the pointmap.
+        x_y_bounds (list): Minimum and maximum values for x and y dimensions.
+        z_bounds (list): Minimum and maximum values for z dimension.
+        prediction_thresh (float): Threshold for considering a voxel as unoccupied.
+        
+    Returns:
+        np.ndarray: Array of shape (num_points, 3) representing unoccupied points.
+    """
+    # Move to CPU if it's a torch tensor
+    if isinstance(pointmap, torch.Tensor):
+        local_pm = pointmap.cpu().numpy()
+    else:
+        local_pm = pointmap
+        
+    # Get indices where there are unoccupied points (below threshold)
     point_idx = np.where(local_pm < prediction_thresh)
-    points_arr = np.array([[point_idx[1]],[point_idx[2]],[point_idx[0]]], dtype = float)
-    points_arr = np.transpose(points_arr, (1,2,0))
-    points_arr = points_arr[0,:,:]
-    # print(points_arr.shape)
-    points_arr[:,0] = points_arr[:,0]*voxel_size + voxel_size/2
-    points_arr[:,1] = points_arr[:,1]*voxel_size + voxel_size/2
-    points_arr[:,2] = points_arr[:,2]*voxel_size + voxel_size/2
+    
+    # Create points array using the indices
+    points_arr = np.array([[point_idx[1]], [point_idx[2]], [point_idx[0]]], dtype=float)
+    points_arr = np.transpose(points_arr, (1, 2, 0))[0]
+    
+    # Convert indices to coordinates
+    points_arr[:, 0] = points_arr[:, 0] * voxel_size + voxel_size / 2
+    points_arr[:, 1] = points_arr[:, 1] * voxel_size + voxel_size / 2
+    points_arr[:, 2] = points_arr[:, 2] * voxel_size + voxel_size / 2
 
-    points_arr[:,0] = points_arr[:,0] - abs(x_y_bounds[0])
-    points_arr[:,1] = points_arr[:,1] - abs(x_y_bounds[0])
-    points_arr[:,2] = points_arr[:,2] - abs(z_bounds[0])
+    # Shift points back to original coordinate system
+    points_arr[:, 0] = points_arr[:, 0] - abs(x_y_bounds[0])
+    points_arr[:, 1] = points_arr[:, 1] - abs(x_y_bounds[0])
+    points_arr[:, 2] = points_arr[:, 2] - abs(z_bounds[0])
 
     return points_arr
-
 
 def inpainting_pointmaps_w_freespace(model, noise_scheduler, width, inpainting_target, inpainting_unocc, torch_device = "cpu", denoising_steps = 30, guidance_scale = 3, sample_batch_size = 1):
     #set up initialize noise scheudler and noise to be operated on
