@@ -8,3 +8,4 @@ scene analysis.
 Classes:
     FrontierFinder: A class for identifying and clustering frontier points in point cloud data.
 """
+

@@ -8,3 +8,4 @@ Modules:
     diffusion_server: Flask server for diffusion-based point cloud completion
     client_test: Client for testing the diffusion server functionality
 """
+

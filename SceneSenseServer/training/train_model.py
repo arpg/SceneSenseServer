@@ -1,38 +1,61 @@
-from dataclasses import dataclass
-from diffusers import UNet2DModel
-import torch
-from diffusers import DDPMScheduler
-import torch.nn.functional as F
-import os
-from natsort import natsorted
-import numpy as np
+"""
+Diffusion model training script for point cloud completion.
+
+This script trains a UNet-based diffusion model on point cloud data for the task of
+scene completion. It uses the Hugging Face Diffusers library and Weights & Biases
+for experiment tracking.
+"""
+
 import copy
+import os
+import random
+import re
+import time
+from dataclasses import dataclass
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+import wandb
+from diffusers import DDPMScheduler, UNet2DModel
+from diffusers.optimization import get_cosine_schedule_with_warmup
+from huggingface_hub import login
+from natsort import natsorted
+
 # import open3d as o3d
 from tqdm.auto import tqdm
-import wandb
-import random
-from huggingface_hub import login
-from diffusers.optimization import get_cosine_schedule_with_warmup
-import re
-import utils.utils as utils
-import time
 
-login(token="Your Huggingface Token")
-wandb.init(
-    # set the wandb project where this run will be logged
-    project="scene_diffusion",
+from SceneSenseServer.utils import utils
+
+
+# Initialize Weights & Biases and Hugging Face
+def init_tracking(hf_token=None):
+    """
+    Initialize tracking for the training run with Weights & Biases and Hugging Face.
     
-    # track hyperparameters and run metadata
-    config={
-    "learning_rate": 0.02,
-    "architecture": "CNN",
-    "dataset": "CIFAR-100",
-    "epochs": 10,
-    }
-)
+    Args:
+        hf_token (str, optional): Hugging Face API token. If None, skips login.
+    """
+    if hf_token:
+        login(token=hf_token)
+    
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="scene_diffusion",
+        
+        # track hyperparameters and run metadata
+        config={
+        "learning_rate": 0.02,
+        "architecture": "CNN",
+        "dataset": "CIFAR-100",
+        "epochs": 10,
+        }
+    )
+
 
 @dataclass
 class TrainingConfig:
+    """Configuration for the diffusion model training process."""
     image_size = 44  # the generated image resolution
     train_batch_size = 32
     eval_batch_size = 32  # how many images to sample during evaluation
@@ -43,7 +66,7 @@ class TrainingConfig:
     save_image_epochs = 10
     save_model_epochs = 20
     mixed_precision = "fp16"  # `no` for float32, `fp16` for automatic mixed precision
-    output_dir = "baseline_road_diffusion"  # the model name locally and on the HF Hub
+    output_dir = ""  # the model name locally and on the HF Hub
 
     push_to_hub = True  # whether to upload the saved model to the HF Hub
     hub_private_repo = False
@@ -124,8 +147,6 @@ print(len(gt_full_path))
 # shuffle arrays:
 np.random.seed(1)
 np.random.shuffle(gt_full_path)
-# # print(gt_data.shape)
-# # print(len(cond_files))
 gt_dataloader = torch.utils.data.DataLoader(gt_full_path, batch_size=config.train_batch_size, shuffle=False)
 # conditioning_dataloader = torch.utils.data.DataLoader(aligned_cond_files, batch_size=config.train_batch_size, shuffle=False)
 
@@ -185,22 +206,12 @@ for epoch in range(config.num_epochs):
             0, noise_scheduler.config.num_train_timesteps, (bs,), device=clean_images.device
         ).long()
 
-        # Add noise to the clean images according to the noise magnitude at each timestep
-        # (this is the forward diffusion process)
         noisy_images = noise_scheduler.add_noise(clean_images, noise, timesteps)
         noisy_images = noisy_images.to(torch_device)
  
-        # print(noisy_images.dtype)
-        # print(post_model_conditioning_batch.dtype)
-        # print(noisy_images.shape)
-        # print(post_model_conditioning_batch.shape)
         noise_pred = model(noisy_images, timesteps, return_dict=False)[0]
         loss = F.mse_loss(noise_pred, noise)
         loss.backward()
-        # torch.nn.utils.clip_grad_norm(list(model.parameters()) + list(conditioning_model.parameters()),options['clip_gradient_norm'])
-
-        #NEED TO ADD THIS 
-        # accelerator.clip_grad_norm_(model.parameters(), 1.0)
 
         optimizer.step()
         lr_scheduler.step()
@@ -219,9 +230,6 @@ for epoch in range(config.num_epochs):
             model.push_to_hub("frontier_diff_try_3")
         except:
             print("push failed")
-# #     # repo.push_to_hub(commit_message=f"Epoch {epoch}", blocking=True)
-# #     # conditioning_model.push_to_hub("diff_pointnet")
-# #     # repo.push_to_hub(commit_message=f"Epoch {epoch}", blocking=True)
 
 
 
